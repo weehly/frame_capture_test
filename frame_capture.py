@@ -9,8 +9,8 @@ try:
 except Exception:
     pass
 
-ROOT = Path(os.getenv("/dev/video0") or Path(__file__).resolve().parent)
-print("/dev/video0", ROOT)
+ROOT = Path(os.getenv("/dev/video1") or Path(__file__).resolve().parent)
+print("/dev/video1", ROOT)
 
 # ---- Pfade ----
 IMAGE_DIR = ROOT / "Skalierung_Zoom_Daten" / "Beispielbilder"
