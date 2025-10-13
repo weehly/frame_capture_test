@@ -1,93 +1,96 @@
 #!/usr/bin/env python3
-import os, cv2, datetime, numpy as np
+import cv2, datetime, time
 from pathlib import Path
+import RPi.GPIO as GPIO
 
-# ---- ROOT ermitteln: .env optional, sonst Ordner der Datei nutzen ----
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+# ==== Einstellungen ====
+DEVICE = 0                 # /dev/video0=0, /dev/video1=1
+WIDTH, HEIGHT, FPS = 1280, 720, 30
+FOURCC = "MJPG"            # Fallback auf "YUYV" möglich
+BTN_GPIO = 17              # Taster an BCM 17 (Pin 11 -> gegen GND)
+FULLSCREEN = True          # Vorschau im Vollbild
 
-ROOT = Path(os.getenv("/dev/video1") or Path(__file__).resolve().parent)
-print("/dev/video1", ROOT)
-
-# ---- Pfade ----
-IMAGE_DIR = ROOT / "Skalierung_Zoom_Daten" / "Beispielbilder"
-OUT_DIR   = ROOT / "screenshots"
+OUT_DIR = Path("screenshots")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-def save_snapshot(frame_bgr: np.ndarray) -> Path:
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = OUT_DIR / f"shot_{ts}.jpg"
-    cv2.imwrite(str(path), frame_bgr)
-    print(f"[Gespeichert] {path}")
-    return path
+def save_jpg(img):
+    p = OUT_DIR / f"shot_{datetime.datetime.now():%Y%m%d_%H%M%S}.jpg"
+    cv2.imwrite(str(p), img)
+    print("[Gespeichert]", p)
+    return p
 
-# ==================== RASPI: USB-Framegrabber (AKTIV) ====================
-def run_opencv_grabber(device_index: int = 0, width: int = 1280, height: int = 720, fps: int = 30, fourcc: str = "MJPG"):
-    # Raspi/Linux: V4L2; Windows wäre CAP_DSHOW, aber hier Pi-Fokus
-    cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
+def open_cap(idx, fourcc="MJPG"):
+    cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS,          fps)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS,          FPS)
+    ok, f = cap.read()
+    if not ok or f is None:
+        cap.release()
+        return None
+    return cap
 
-    if not cap.isOpened():
-        print(f"[Fehler] /dev/video{device_index} nicht verfügbar."); return
+def main():
+    # --- GPIO ---
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(BTN_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    button_pressed = [False]
 
-    print("[Info] Grabber aktiv. 's' = Screenshot speichern, 'q' = Quit.")
-    while True:
-        ok, f = cap.read()
-        if not ok:
-            print("[Warnung] Frame konnte nicht gelesen werden."); break
-        cv2.imshow("Preview", f)
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord('s'):
-            save_snapshot(f)
-        if k == ord('q'):
-            break
+    def on_button(_): button_pressed.__setitem__(0, True)
+    GPIO.add_event_detect(BTN_GPIO, GPIO.FALLING, callback=on_button, bouncetime=250)
 
-    cap.release()
-    cv2.destroyAllWindows()
+    # --- Capture ---
+    cap = open_cap(DEVICE, FOURCC) or open_cap(DEVICE, "YUYV")
+    if cap is None:
+        print(f"[Fehler] Konnte /dev/video{DEVICE} nicht öffnen."); GPIO.cleanup(); return
 
-# ==================== PC-TEST: Bilderordner (AUSKOMMENTIERT) ====================
-# def run_folder_stream():
-#     paths = sorted([p for ext in ("*.png","*.jpg","*.jpeg","*.bmp") for p in IMAGE_DIR.glob(ext)])
-#     if not paths:
-#         print("[Fehler] Keine Testbilder gefunden:", IMAGE_DIR); return
-#     i = 0
-#     print("[Info] PC-Testmodus. 's' = Screenshot speichern, 'q' = Quit.")
-#     while True:
-#         f = cv2.imread(str(paths[i]), cv2.IMREAD_COLOR)
-#         if f is None: break
-#         cv2.imshow("Preview", f)
-#         k = cv2.waitKey(1) & 0xFF
-#         if k == ord('s'):
-#             save_snapshot(f)
-#         if k == ord('q'):
-#             break
-#         i = (i + 1) % len(paths)
-#     cv2.destroyAllWindows()
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"[Info] Capture: /dev/video{DEVICE} {w}x{h} @~{FPS}fps")
+    show = True
+    try:
+        # Fenster vorbereiten (falls Display verfügbar)
+        try:
+            cv2.namedWindow("Preview", cv2.WINDOW_NORMAL)
+            if FULLSCREEN:
+                cv2.setWindowProperty("Preview", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        except cv2.error:
+            print("[Hinweis] Kein Display verfügbar -> Headless-Modus.")
+            show = False
 
-# ==================== FFmpeg-Pipe (optional, AUSKOMMENTIERT) ====================
-# import subprocess, shlex
-# def run_ffmpeg_pipe(device="/dev/video0", width=1280, height=720, fps=30):
-#     cmd = f"ffmpeg -hide_banner -loglevel error -f v4l2 -framerate {fps} -video_size {width}x{height} -i {device} -f rawvideo -pix_fmt bgr24 -"
-#     p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, bufsize=10**7)
-#     n = width * height * 3
-#     print("[Info] FFmpeg-Grabber. 's' = Screenshot, 'q' = Quit.")
-#     while True:
-#         b = p.stdout.read(n)
-#         if len(b) != n: break
-#         f = np.frombuffer(b, np.uint8).reshape((height, width, 3))
-#         cv2.imshow("Preview", f)
-#         k = cv2.waitKey(1) & 0xFF
-#         if k == ord('s'): save_snapshot(f)
-#         if k == ord('q'): break
-#     p.terminate(); cv2.destroyAllWindows()
+        last_flash = 0.0
+        while True:
+            ok, frame = cap.read()
+            if not ok: print("[Warnung] Frame read failed"); time.sleep(0.01); continue
+
+            # Overlay (nur Anzeige)
+            if show:
+                cv2.putText(frame, "Button=Save  |  S=Save  Q=Quit", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2, cv2.LINE_AA)
+                if time.time() - last_flash < 0.15:  # kurzer „Flash“ nach Save
+                    cv2.rectangle(frame, (0,0), (w,h), (0,255,0), 30)
+
+                cv2.imshow("Preview", frame)
+                k = cv2.waitKey(1) & 0xFF
+                if k == ord('s'):
+                    save_jpg(frame); last_flash = time.time()
+                elif k == ord('q'):
+                    break
+            else:
+                # Headless: nur auf Button hören; CPU schonen
+                time.sleep(0.005)
+
+            if button_pressed[0]:
+                save_jpg(frame); last_flash = time.time()
+                button_pressed[0] = False
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.release()
+        if show: cv2.destroyAllWindows()
+        GPIO.cleanup()
+        print("[Info] Beendet.")
 
 if __name__ == "__main__":
-    run_opencv_grabber()      # <-- Raspi/USB aktiv
-    # run_folder_stream()     # <-- PC-Test aktivieren, wenn nötig
-    # run_ffmpeg_pipe()       # <-- Alternative Pipeline aktivieren
+    main()
