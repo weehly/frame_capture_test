@@ -4,7 +4,7 @@ from pathlib import Path
 import RPi.GPIO as GPIO
 
 # ==== Einstellungen ====
-DEVICE = 0                 # /dev/video0=0, /dev/video1=1
+DEVICE = 1                 # /dev/video0=0, /dev/video1=1
 WIDTH, HEIGHT, FPS = 1280, 720, 30
 FOURCC = "MJPG"            # Fallback auf "YUYV" möglich
 BTN_GPIO = 17              # Taster an BCM 17 (Pin 11 -> gegen GND)
